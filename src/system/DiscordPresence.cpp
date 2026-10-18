@@ -336,6 +336,7 @@ void DiscordPresence::update()
     const QString state = fitText(playing ? song.artists
         : song.artists.trimmed().isEmpty() ? tr("Paused") : tr("Paused") + QStringLiteral(" · ") + song.artists);
     if (!state.isEmpty()) activity.insert(QStringLiteral("state"), state);
+    // Never expose local file paths, filenames, or private artwork URLs.
 
     if (!song.isLocalFile() && song.artworkUrl.scheme() == QLatin1StringView("https")
         && song.artworkUrl.host() == QLatin1StringView("i.scdn.co")) {
@@ -361,7 +362,10 @@ void DiscordPresence::update()
 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const qint64 position = m_player->livePositionMs();
+    // The output's first duration arrives on the next player poll. Metadata
+    // already has it, so the initial activity needn't lose its progress bar.
     const qint64 duration = m_player->durationMs() > 0 ? m_player->durationMs() : song.durationMs;
+    // Publish on metadata/track changes and seeks, not every progress tick.
     
     QJsonObject metadata = activity;
     metadata.insert(QStringLiteral("track"), QString::number(song.instanceId));
