@@ -117,6 +117,14 @@ Translations use Qt `qsTr` / `qsTranslate` and an embedded UTF-8 catalog at
 `translations/ru.json`; no additional Linguist tools are required. Russian plural
 entries contain three forms (one, few, many).
 
+### Windows media widgets
+
+Windows builds with a sufficiently recent SMTC SDK publish track duration and
+position through the media-session timeline, not just taskbar progress. Widgets
+using the Windows media-session API can read these values; other/custom widget
+integrations may need their own support. Runtime verification on Windows is
+still required.
+
 ### Build requirements
 
 - Qt 6.9 or newer: Qt Base, Qt Declarative and Qt Shader Tools, and on linux Qt WebSockets (for soloist)

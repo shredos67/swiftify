@@ -14,6 +14,7 @@ endfunction()
 
 swiftify_test(tst_settings)
 swiftify_test(tst_discord FakeCore.h)
+swiftify_test(tst_media_timeline)
 swiftify_test(tst_translations)
 swiftify_test(tst_theme)
 swiftify_test(tst_playback FakeCore.h)

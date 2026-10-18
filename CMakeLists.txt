@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(Swiftify
-    VERSION 0.13.0
+    VERSION 0.13.1
     DESCRIPTION "A native Spotify client"
     LANGUAGES C CXX)
 
@@ -333,6 +333,26 @@ if(WIN32)
     unset(CMAKE_REQUIRED_LIBRARIES)
     if(SWIFTIFY_HAVE_SMTC)
         target_compile_definitions(swiftify_app PRIVATE SWIFTIFY_HAVE_SMTC)
+        set(CMAKE_REQUIRED_LIBRARIES runtimeobject)
+        check_cxx_source_compiles([=[
+            #include <windows.h>
+            #ifdef __MINGW32__
+            #define ____FIReference_1_boolean_INTERFACE_DEFINED__
+            #endif
+            #include <windows.media.h>
+            int main()
+            {
+                ABI::Windows::Media::ISystemMediaTransportControls2 *controls = nullptr;
+                ABI::Windows::Media::ISystemMediaTransportControlsTimelineProperties *timeline = nullptr;
+                return controls || timeline ? 1 : 0;
+            }
+        ]=] SWIFTIFY_HAVE_SMTC_TIMELINE)
+        unset(CMAKE_REQUIRED_LIBRARIES)
+        if(SWIFTIFY_HAVE_SMTC_TIMELINE)
+            target_compile_definitions(swiftify_app PRIVATE SWIFTIFY_HAVE_SMTC_TIMELINE)
+        else()
+            message(WARNING "These Windows SDK headers lack the SMTC timeline interfaces; widget duration needs a newer SDK or MSVC.")
+        endif()
     else()
         message(WARNING "This toolchain's windows.media.h has no SystemMediaTransportControls, so Swiftify is "
             "building without the Windows media controls (media overlay, lock screen, media keys). "
