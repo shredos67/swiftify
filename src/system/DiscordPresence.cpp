@@ -14,6 +14,12 @@
 #include <QUuid>
 #include <QtEndian>
 #include <utility>
+
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QUrl>
+#include <QUrlQuery>
+
 #ifdef Q_OS_LINUX
 #include <unistd.h>
 #endif
@@ -330,36 +336,113 @@ void DiscordPresence::update()
     const QString state = fitText(playing ? song.artists
         : song.artists.trimmed().isEmpty() ? tr("Paused") : tr("Paused") + QStringLiteral(" · ") + song.artists);
     if (!state.isEmpty()) activity.insert(QStringLiteral("state"), state);
-    // Never expose local file paths, filenames, or private artwork URLs.
+
     if (!song.isLocalFile() && song.artworkUrl.scheme() == QLatin1StringView("https")
         && song.artworkUrl.host() == QLatin1StringView("i.scdn.co")) {
         QJsonObject assets {{QStringLiteral("large_image"), song.artworkUrl.toString()}};
         const QString album = fitText(song.albumName);
         if (!album.isEmpty()) assets.insert(QStringLiteral("large_text"), album);
         activity.insert(QStringLiteral("assets"), assets);
+    } else if (song.isLocalFile()) {
+        const QString cacheKey = song.artists + "|" + song.albumName + "|" + song.name;
+        if (m_coverCache.contains(cacheKey)) {
+            const QString coverUrl = m_coverCache.value(cacheKey);
+            if (!coverUrl.isEmpty()) {
+                QJsonObject assets {{QStringLiteral("large_image"), coverUrl}};
+                const QString album = fitText(song.albumName);
+                if (!album.isEmpty()) assets.insert(QStringLiteral("large_text"), album);
+                activity.insert(QStringLiteral("assets"), assets);
+            }
+        } else {
+            fetchDeezerCover(cacheKey, song.artists, song.albumName, song.name);
+            return;
+        }
     }
+
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const qint64 position = m_player->livePositionMs();
-    // The output's first duration arrives on the next player poll. Metadata
-    // already has it, so the initial activity needn't lose its progress bar.
     const qint64 duration = m_player->durationMs() > 0 ? m_player->durationMs() : song.durationMs;
-    // Publish on metadata/track changes and seeks, not every progress tick.
+    
     QJsonObject metadata = activity;
     metadata.insert(QStringLiteral("track"), QString::number(song.instanceId));
     metadata.insert(QStringLiteral("duration"), duration);
     metadata.insert(QStringLiteral("playing"), playing);
+    
     if (m_published && metadata == m_lastMetadata
         && (!playing || qAbs(position - (m_lastPosition + now - m_lastUpdate)) < 2000)) return;
+        
     if (playing && duration > position) {
         activity.insert(QStringLiteral("timestamps"), QJsonObject {
             {QStringLiteral("start"), (now - position) / 1000},
             {QStringLiteral("end"), (now + duration - position) / 1000}});
     }
+    
     send(1, QJsonDocument(command(activity)).toJson(QJsonDocument::Compact));
+    
     m_lastMetadata = metadata;
     m_lastPosition = position;
     m_lastUpdate = now;
     m_published = true;
 }
 
+void DiscordPresence::fetchDeezerCover(const QString &cacheKey, const QString &artist, const QString &album, const QString &title)
+{
+    if (m_pendingFetches.contains(cacheKey)) return;
+    m_pendingFetches.insert(cacheKey);
+
+    QUrl url("https://api.deezer.com/search");   
+    QUrlQuery query;
+    query.addQueryItem("q", QStringLiteral("%1 %2").arg(artist, title));
+    query.addQueryItem("limit", "10");
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    QNetworkReply *reply = m_network.get(request);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, cacheKey, album]() {
+        reply->deleteLater();
+        m_pendingFetches.remove(cacheKey);
+
+        if (reply->error() == QNetworkReply::NoError) {
+            const QByteArray responseData = reply->readAll();
+            const QJsonObject doc = QJsonDocument::fromJson(responseData).object();
+            const QJsonArray data = doc.value(QStringLiteral("data")).toArray();
+            
+            if (!data.isEmpty()) {
+                QString coverUrl;
+                for (const QJsonValue &value : data) {
+                    const QJsonObject track = value.toObject();
+                    const QJsonObject albumObj = track.value(QStringLiteral("album")).toObject();
+                    const QString albumTitle = albumObj.value(QStringLiteral("title")).toString();
+                    
+                    if (albumTitle.compare(album, Qt::CaseInsensitive) == 0) {
+                        coverUrl = albumObj.value(QStringLiteral("cover_xl")).toString();
+                        if (coverUrl.isEmpty()) coverUrl = albumObj.value(QStringLiteral("cover_big")).toString();
+                        if (coverUrl.isEmpty()) coverUrl = albumObj.value(QStringLiteral("cover")).toString();
+                        break;
+                    }
+                }
+
+                if (coverUrl.isEmpty()) {
+                    const QJsonObject firstTrack = data.first().toObject();
+                    const QJsonObject firstAlbum = firstTrack.value(QStringLiteral("album")).toObject();
+                    coverUrl = firstAlbum.value(QStringLiteral("cover_xl")).toString();
+                    if (coverUrl.isEmpty()) coverUrl = firstAlbum.value(QStringLiteral("cover_big")).toString();
+                    if (coverUrl.isEmpty()) coverUrl = firstAlbum.value(QStringLiteral("cover")).toString();
+                }
+
+                if (!coverUrl.isEmpty()) {
+                    m_coverCache.insert(cacheKey, coverUrl);
+                    scheduleUpdate();
+                    return;
+                }
+            }
+        }
+
+        m_coverCache.insert(cacheKey, QString());
+        scheduleUpdate();
+    });
+}
+
 } // namespace swiftify
+

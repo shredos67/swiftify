@@ -7,6 +7,9 @@
 #include <QStringList>
 #include <QtQml/qqmlregistration.h>
 #include <functional>
+#include <QNetworkAccessManager>
+#include <QHash>
+#include <QSet>
 
 class QQmlEngine;
 class QJSEngine;
@@ -76,6 +79,12 @@ private:
     QJsonObject m_lastMetadata;
     qint64 m_lastPosition = 0;
     qint64 m_lastUpdate = 0;
+
+    // NEW: Network and caching for Deezer cover art
+    QNetworkAccessManager m_network;
+    QHash<QString, QString> m_coverCache;
+    QSet<QString> m_pendingFetches;
+    void fetchDeezerCover(const QString &cacheKey, const QString &artist, const QString &album, const QString &title);
 };
 
 } // namespace swiftify
