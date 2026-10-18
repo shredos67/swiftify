@@ -272,6 +272,149 @@ private slots:
         QVERIFY(panel->x() >= 0);
     }
 
+    /// lyrics scrolled up past the panel are faded out of sight, and the
+    /// buttons over them take the click, not the lines
+    void scrolledLyricsLeaveTheTopBarClickable()
+    {
+        Rig rig;
+        rig.settings.setPerformanceMode(true);
+        QFile lyrics(rig.directory.filePath(QStringLiteral("sung.lrc")));
+        QVERIFY(lyrics.open(QIODevice::WriteOnly));
+        for (int line = 0; line < 40; ++line) {
+            lyrics.write(QStringLiteral("[%1:%2.00]line %3\n")
+                             .arg(line * 5 / 60, 2, 10, QLatin1Char('0'))
+                             .arg(line * 5 % 60, 2, 10, QLatin1Char('0'))
+                             .arg(line)
+                             .toUtf8());
+        }
+        lyrics.close();
+        Song song;
+        song.uri = QUrl::fromLocalFile(rig.directory.filePath(QStringLiteral("sung.flac"))).toString();
+        song.durationMs = 200'000;
+        rig.player.play(song, {song});
+        Rig::settle();
+        QVERIFY(rig.player.lyricsSynchronized());
+        rig.settings.setImmersivePlayerPanel(QStringLiteral("lyrics"));
+        const auto player = rig.show(QStringLiteral("ImmersivePlayer"));
+        QVERIFY(player);
+        // the smallest window shows the lyrics alone, right under the top bar
+        player->setSize(QSize(526, 410));
+        Rig::settle();
+        QVERIFY(player->property("panelOnly").toBool());
+        auto *list = player->findChild<QQuickItem *>(QStringLiteral("immersiveLyricsList"));
+        auto *close = player->findChild<QQuickItem *>(QStringLiteral("immersiveCloseButton"));
+        auto *switcher = player->findChild<QQuickItem *>(QStringLiteral("immersiveSwitcher"));
+        QVERIFY(list && close && switcher);
+        list->setProperty("contentY", 600.0);
+        Rig::settle();
+        rig.render();
+
+        const auto click = [&](QPointF point) {
+            QTest::mouseClick(rig.window.get(), Qt::LeftButton, Qt::NoModifier, point.toPoint());
+            Rig::settle();
+        };
+        QSignalSpy closing(player.get(), SIGNAL(closeRequested()));
+        click(close->mapToScene(QPointF(close->width() / 2, close->height() / 2)));
+        QCOMPARE(closing.count(), 1);
+        // the switcher's last segment, Sound, on the right of the bar
+        click(switcher->mapToScene(QPointF(switcher->width() - 14, switcher->height() / 2)));
+        QTRY_COMPARE(player->property("panel").toString(), QStringLiteral("audio"));
+    }
+
+    /// in a short window the settings rail scrolls to its last destinations,
+    /// and shows its scroll bar only then
+    void theSettingsRailScrollsInShortWindows()
+    {
+        Rig rig;
+        QQmlComponent component(&rig.engine);
+        // a plain window's overlay has no size, so the dialog sits in a host
+        // the size of the window it would cover
+        component.setData("import QtQuick\nimport Swiftify\nItem { id: host; width: 1280; height: 780\n"
+                          "    property alias dialog: settings\n"
+                          "    SettingsDialog { id: settings; parent: host } }",
+                          QUrl());
+        std::unique_ptr<QObject> object(component.create());
+        QVERIFY2(object, qPrintable(component.errorString()));
+        qobject_cast<QQuickItem *>(object.get())->setParentItem(rig.window->contentItem());
+        auto *dialog = object->property("dialog").value<QObject *>();
+        QVERIFY(dialog);
+        QVERIFY(QMetaObject::invokeMethod(dialog, "open"));
+        QTRY_VERIFY(dialog->property("opened").toBool());
+        auto *rail = object->findChild<QQuickItem *>(QStringLiteral("settingsRail"));
+        QVERIFY(rail);
+        auto *bar = QQmlProperty(rail, QStringLiteral("ScrollBar.vertical"), qmlContext(rail)).read().value<QQuickItem *>();
+        QVERIFY(bar);
+
+        // everything fits in the usual window: nothing scrolls or shows
+        Rig::settle();
+        rig.render();
+        QVERIFY(!rail->property("interactive").toBool());
+        QVERIFY(!bar->isVisible());
+
+        qobject_cast<QQuickItem *>(object.get())->setSize(QSizeF(526, 410));
+        Rig::settle();
+        rig.render();
+        QVERIFY(rail->property("interactive").toBool());
+        QVERIFY(bar->isVisible());
+        const qreal bottom = rail->property("contentHeight").toReal() - rail->height();
+        rail->setProperty("contentY", bottom);
+        Rig::settle();
+        rig.render();
+        // About, the last destination, sits just above the rail's bottom edge
+        QTest::mouseClick(rig.window.get(), Qt::LeftButton, Qt::NoModifier,
+                          rail->mapToScene(QPointF(rail->width() / 2, rail->height() - 48)).toPoint());
+        QTRY_COMPARE(dialog->property("page").toInt(), 7);
+    }
+
+    void longSongTitlesScrollInImmersivePlayer()
+    {
+        Rig rig;
+        QList<Song> queue;
+        Song longSong;
+        longSong.name = QStringLiteral("This Is An Incredibly Long Song Title That Far Exceeds Normal Metadata Width whoever reads this pls save yourself this file is way too long");
+        longSong.artists = QStringLiteral("Artist");
+        longSong.albumName = QStringLiteral("Album");
+        longSong.uri = QUrl::fromLocalFile(QStringLiteral("/music/longsong.flac")).toString();
+        longSong.durationMs = 200'000;
+        queue.append(longSong);
+
+        rig.player.play(queue[0], queue);
+        Rig::settle();
+        const auto call = rig.core.take(QStringLiteral("playFile"));
+        QVERIFY(call);
+        call->succeed();
+        Rig::settle();
+
+        const auto player = rig.show(QStringLiteral("ImmersivePlayer"));
+        QVERIFY(player);
+        auto *titleItem = player->findChild<QQuickItem *>(QStringLiteral("immersiveTitle"));
+        QVERIFY(titleItem);
+        QCOMPARE(titleItem->property("text").toString(), longSong.name);
+        QVERIFY(titleItem->property("overflows").toBool());
+        QVERIFY(titleItem->property("shouldScroll").toBool());
+        // when standing still at the start, the left side has no fade so the first character is not cut off or faded
+        QCOMPARE(titleItem->property("leftEdge").toReal(), 0.0);
+        QVERIFY(titleItem->property("rightEdge").toReal() > 0.0);
+
+        Song shortSong;
+        shortSong.name = QStringLiteral("Hi");
+        shortSong.artists = QStringLiteral("Artist");
+        shortSong.albumName = QStringLiteral("Album");
+        shortSong.uri = QUrl::fromLocalFile(QStringLiteral("/music/shortsong.flac")).toString();
+        shortSong.durationMs = 200'000;
+        queue[0] = shortSong;
+        rig.player.play(queue[0], queue);
+        Rig::settle();
+        const auto call2 = rig.core.take(QStringLiteral("playFile"));
+        QVERIFY(call2);
+        call2->succeed();
+        Rig::settle();
+
+        QCOMPARE(titleItem->property("text").toString(), shortSong.name);
+        QVERIFY(!titleItem->property("overflows").toBool());
+        QVERIFY(!titleItem->property("shouldScroll").toBool());
+    }
+
     void multilineLyricsStayInsideTheirHighlight_data()
     {
         QTest::addColumn<QString>("words");
@@ -3121,7 +3264,7 @@ private slots:
                                  "StyledSwitch", "RollingText", "PlayerBar", "LyricsPanel", "QueuePanel", "Sidebar",
                                  "PageHost", "HomeView", "SearchView", "ArtistView", "AlbumView", "PlaylistView", "PlaylistsView", "SavedSongsView", "LocalFilesView", "LocalTracksView", "StartupView",
                                  "SetupView", "CompactMeter", "MaterialShape", "ShapeIcon", "SquiggleRing", "WavyLine",
-                                 "LoadingSpinner", "ShapeButton", "WavyPill", "ToolbarButton", "PlayButton"}) {
+                                 "LoadingSpinner", "ShapeButton", "WavyPill", "ToolbarButton", "PlayButton", "ScrollingText"}) {
             QTest::newRow(type) << QString::fromLatin1(type);
         }
     }

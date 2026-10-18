@@ -1,0 +1,172 @@
+# prebuilt windows and linux x86_64 builds. a v tag (v0.10.0) builds both and
+# puts them on a draft release to publish by hand. it also runs from the
+# actions tab, and on pull requests that change how the builds are made
+name: prebuilt
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/prebuilt.yml
+      - tools/build-windows.ps1
+      - tools/build-linux-tarball.sh
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    # windows-2025 and windows-latest come with visual studio 2026, which
+    # build-windows.ps1 does not take
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: version
+        id: version
+        shell: bash
+        run: |
+          version="$(sed -n '/^project(Swiftify/,/VERSION/s/^ *VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "the tag $GITHUB_REF_NAME does not match the version $version in CMakeLists.txt" >&2
+            exit 1
+          fi
+          echo "name=swiftify-$version-windows-x86_64" >> "$GITHUB_OUTPUT"
+
+      # as ctest runs it. the test runs a failing command on purpose, which a
+      # plain pwsh step would report as its own exit code
+      - name: test the build script
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tests/check_windows_build.ps1
+
+      # qt 6.11 and newer split the windows repository by compiler, which aqt
+      # 3.3 cannot read yet. 6.10 is the newest it can
+      - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: 6.10.3
+          arch: win64_msvc2022_64
+          modules: qtshadertools
+          cache: true
+
+      - name: build
+        shell: pwsh
+        run: >
+          .\tools\build-windows.ps1 -QtPath $env:QT_ROOT_DIR
+          -BuildRoot "$env:RUNNER_TEMP\build"
+          -InstallPrefix "$env:RUNNER_TEMP\${{ steps.version.outputs.name }}"
+
+      # msvc's headers have the media controls, so a build without them is a bug
+      - name: check the media controls are in
+        shell: pwsh
+        run: |
+          $cache = Get-ChildItem "$env:RUNNER_TEMP\build\*\swiftify\CMakeCache.txt"
+          if (-not (Select-String -Path $cache -Pattern '^SWIFTIFY_HAVE_SMTC:INTERNAL=1$' -Quiet)) {
+            throw 'built without the windows media controls'
+          }
+
+      # every dll the exe and its libraries load has to be in the zip, or be
+      # part of windows. the c++ runtime counts as missing unless it is bundled
+      - name: check every library is there
+        shell: pwsh
+        run: |
+          $root = "$env:RUNNER_TEMP\${{ steps.version.outputs.name }}"
+          $bin = Join-Path $root 'bin'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -find 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin not found' }
+          $missing = @()
+          foreach ($file in Get-ChildItem $root -Recurse -Include *.exe, *.dll) {
+            $dependents = & $dumpbin /nologo /dependents $file.FullName |
+              Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim() }
+            foreach ($dll in $dependents) {
+              if ($dll -match '^(api|ext)-ms-') { continue }
+              if ((Test-Path (Join-Path $bin $dll)) -or (Test-Path (Join-Path $file.DirectoryName $dll))) { continue }
+              $system = Test-Path (Join-Path "$env:SystemRoot\System32" $dll)
+              if ($system -and $dll -notmatch '^(vcruntime|msvcp|concrt|vccorlib)') { continue }
+              $missing += "$($file.FullName.Substring($root.Length + 1)) needs $dll"
+            }
+          }
+          if ($missing) {
+            $missing | Sort-Object -Unique | Write-Host
+            throw 'libraries missing from the zip'
+          }
+
+      - name: package
+        shell: pwsh
+        run: >
+          Compress-Archive -Path "$env:RUNNER_TEMP\${{ steps.version.outputs.name }}"
+          -DestinationPath "${{ steps.version.outputs.name }}.zip"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: ${{ steps.version.outputs.name }}.zip
+          if-no-files-found: error
+
+  linux:
+    # the oldest supported runner, so the tarball runs on older distros too
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: version
+        run: |
+          version="$(sed -n '/^project(Swiftify/,/VERSION/s/^ *VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "the tag $GITHUB_REF_NAME does not match the version $version in CMakeLists.txt" >&2
+            exit 1
+          fi
+
+      # build and bundling dependencies. the xcb, wayland and vulkan libraries
+      # are what qt's plugins link, linuxdeploy has to find them to bundle them
+      - name: packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            g++-12 ninja-build pkg-config \
+            libpulse-dev libasound2-dev libssl-dev libsecret-1-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 \
+            libfontconfig1-dev libfreetype-dev libdbus-1-dev \
+            libwayland-dev libwayland-egl1 libvulkan1 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 libxcb-xinput0
+
+      - uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        with:
+          version: 6.12.0
+          arch: linux_gcc_64
+          # soloist, which is only built for linux, talks to spotify's soloist over websockets
+          modules: qtshadertools qtwebsockets
+          cache: true
+
+      - name: build
+        env:
+          CC: gcc-12
+          CXX: g++-12
+        run: ./tools/build-linux-tarball.sh --qt "$QT_ROOT_DIR" --out dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      # a draft, so the notes are written and it is published by hand
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          files: dist/*

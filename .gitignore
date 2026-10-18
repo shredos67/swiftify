@@ -5,6 +5,8 @@
 # bench_frames runs in (docs/perf.md)
 build/
 build-*/
+# prebuilt packages (tools/build-linux-tarball.sh)
+dist/
 
 # the core's own cargo builds
 target/

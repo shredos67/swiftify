@@ -37,6 +37,9 @@ Item {
         leftMargin: 8
         rightMargin: 8
         boundsBehavior: Flickable.StopAtBounds
+        // the fade hides lines scrolled past the edge, the clip keeps them
+        // from taking clicks meant for the top bar
+        clip: true
 
         layer.enabled: true
         layer.effect: ShaderEffect {

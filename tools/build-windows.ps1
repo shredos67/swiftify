@@ -232,6 +232,14 @@ function Invoke-WindowsBuild {
             @{ Name = 'qtkeychain'; Url = 'https://github.com/frankosterfeld/qtkeychain.git'; Options = @('-DBUILD_WITH_QT5=OFF', '-DBUILD_TEST_APPLICATION=OFF', '-DBUILD_TRANSLATIONS=OFF') },
             @{ Name = 'qcoro'; Url = 'https://github.com/qcoro/qcoro.git'; Options = @('-DUSE_QT_VERSION=6', '-DQCORO_WITH_QTDBUS=OFF', '-DQCORO_WITH_QTWEBSOCKETS=OFF', '-DQCORO_WITH_QTQUICK=OFF', '-DQCORO_WITH_QML=OFF', '-DQCORO_WITH_QTTEST=OFF', '-DQCORO_BUILD_EXAMPLES=OFF') }
         )
+        if ($rustTarget -eq 'x86_64-pc-windows-msvc') {
+            # windeployqt takes any dll named qt6... for one of qt's own and
+            # looks for it in qt's folder, where qt6keychain.dll is not. it gets
+            # the lib prefix mingw already gives it
+            $libraryPrefix = Join-Path $buildDirectory 'library-prefix.cmake'
+            Set-Content -LiteralPath $libraryPrefix -Value 'set(CMAKE_SHARED_LIBRARY_PREFIX lib)'
+            $dependencies[0].Options += "-DCMAKE_PROJECT_INCLUDE=$($libraryPrefix.Replace('\', '/'))"
+        }
         foreach ($dependency in $dependencies) {
             Write-Host "Building $($dependency.Name)..."
             $dependencySource = Join-Path $sourcesDirectory $dependency.Name
@@ -251,6 +259,16 @@ function Invoke-WindowsBuild {
         $executable = Join-Path $installBin 'swiftify.exe'
         Invoke-Native $deployQt @('--release', '--force', '--compiler-runtime', '--qmldir', (Join-Path $sourceRoot 'qml'), $executable) | Out-Host
         Copy-Item -Path "$dependencyPrefix\bin\*.dll" -Destination $installBin -Force
+        if ($rustTarget -eq 'x86_64-pc-windows-msvc') {
+            # windeployqt only leaves msvc's runtime installer, so the runtime
+            # goes beside the exe and it runs without visual c++ installed
+            $runtimeDirectory = Get-ChildItem -LiteralPath (Join-Path $env:VCToolsRedistDir 'x64') -Directory -Filter 'Microsoft.VC*.CRT' | Select-Object -First 1
+            if (-not $runtimeDirectory) {
+                throw 'Cannot locate the Visual C++ runtime to bundle.'
+            }
+            Copy-Item -Path "$($runtimeDirectory.FullName)\*.dll" -Destination $installBin -Force
+            Remove-Item -LiteralPath (Join-Path $installBin 'vc_redist.x64.exe') -ErrorAction SilentlyContinue
+        }
         if ($rustTarget -eq 'x86_64-pc-windows-gnu') {
             foreach ($runtime in @('libstdc++-6.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll')) {
                 $runtimePath = Join-Path $mingw.Directory $runtime

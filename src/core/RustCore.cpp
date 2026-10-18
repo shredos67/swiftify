@@ -222,6 +222,12 @@ QCoro::Task<QString> RustCore::playlistJson(QString playlistUri)
     co_return co_await request([&](quint64 id) { swiftify_core_playlist_json(m_core, id, uri.constData()); });
 }
 
+QCoro::Task<QString> RustCore::artistTopTracksJson(QString artistUri)
+{
+    const QByteArray uri = artistUri.toUtf8();
+    co_return co_await request([&](quint64 id) { swiftify_core_artist_top_tracks_json(m_core, id, uri.constData()); });
+}
+
 void RustCore::play() { throwIfError(swiftify_core_play(m_core)); }
 void RustCore::pause() { throwIfError(swiftify_core_pause(m_core)); }
 void RustCore::seek(quint32 positionMs) { throwIfError(swiftify_core_seek(m_core, positionMs)); }

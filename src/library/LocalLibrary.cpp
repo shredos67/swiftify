@@ -94,9 +94,18 @@ LocalLibrary::LocalLibrary(Settings *settings, QObject *parent, const QString &s
         + QStringLiteral("/local-artwork");
 
     m_sources = m_settings->value(kSourcesKey).toStringList();
-    loadPlaylists();
+    m_playlistsReadable = loadPlaylists();
     loadCache();
-    sweepStore();
+    if (m_playlistsReadable) {
+        sweepStore();
+    } else {
+        // what the copies belong to is in there: nothing of the store goes,
+        // and the list is left as it is, kept aside once more besides
+        const QString aside = m_playlistsPath + QStringLiteral(".unreadable");
+        if (!QFileInfo::exists(aside)) {
+            QFile::copy(m_playlistsPath, aside);
+        }
+    }
     publishPlaylists();
     adoptOutsideTracks();
     if (!m_sources.isEmpty() || QFileInfo::exists(m_trackStore)) {
@@ -521,16 +530,26 @@ void LocalLibrary::editTags(const QString &uri, const QVariantMap &fields, const
 
 // --- playlists ---------------------------------------------------------------------
 
-void LocalLibrary::loadPlaylists()
+bool LocalLibrary::loadPlaylists()
 {
     QFile file(m_playlistsPath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        return;
+    if (!file.exists()) {
+        return true;
     }
-    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+    if (!file.open(QIODevice::ReadOnly)) {
+        qCWarning(lcLocal).noquote() << "could not read the playlists in" << m_playlistsPath << ':' << file.errorString();
+        return false;
+    }
+    QJsonParseError error;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+        qCWarning(lcLocal).noquote() << "could not read the playlists in" << m_playlistsPath << ':' << error.errorString();
+        return false;
+    }
+    const QJsonObject root = document.object();
     if (root.value(QStringLiteral("version")).toInt() != kPlaylistsVersion) {
         qCWarning(lcLocal) << "playlists kept in a version this app does not read:" << m_playlistsPath;
-        return;
+        return false;
     }
     for (const QJsonValue &value : root.value(QStringLiteral("playlists")).toArray()) {
         const QJsonObject object = value.toObject();
@@ -556,10 +575,16 @@ void LocalLibrary::loadPlaylists()
                                    object.value(QStringLiteral("modified")).toInteger()});
         }
     }
+    return true;
 }
 
 void LocalLibrary::savePlaylists() const
 {
+    if (!m_playlistsReadable) {
+        // writing over a list this app could not read would lose what it holds
+        qCWarning(lcLocal) << "playlists not kept: the list there could not be read:" << m_playlistsPath;
+        return;
+    }
     QJsonArray playlists;
     for (const StoredPlaylist &stored : m_storedPlaylists) {
         playlists.append(QJsonObject {{QStringLiteral("id"), stored.id},

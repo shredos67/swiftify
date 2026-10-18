@@ -58,72 +58,86 @@ T.Popup {
             onActivated: root.close()
         }
 
-        Column {
-            id: rail
+        // a short window can't fit every destination, so the rail scrolls
+        Flickable {
+            id: railScroller
+            objectName: "settingsRail"
             x: 12
-            y: 16
             width: 104
-            spacing: 4
+            height: parent.height
+            contentHeight: rail.implicitHeight + 32
+            boundsBehavior: Flickable.StopAtBounds
+            interactive: contentHeight > height
+            clip: true
 
-            Repeater {
-                model: root.titles.length
+            ScrollBar.vertical: StyledScrollBar {}
 
-                delegate: RippleButton {
-                    id: destination
+            Column {
+                id: rail
+                y: 16
+                width: railScroller.width
+                spacing: 4
 
-                    required property int index
-                    readonly property bool selected: root.page === index
+                Repeater {
+                    model: root.titles.length
 
-                    width: rail.width
-                    implicitHeight: 64
-                    padding: 0
-                    colBackground: "transparent"
-                    colBackgroundHover: "transparent"
-                    rippleEnabled: false
-                    onClicked: root.page = index
+                    delegate: RippleButton {
+                        id: destination
 
-                    contentItem: Column {
-                        spacing: 4
+                        required property int index
+                        readonly property bool selected: root.page === index
 
-                        // the selection is a pill behind the icon, which grows in
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: 56
-                            height: 32
-                            radius: height / 2
-                            color: Qt.alpha(Appearance.colors.layer1Hover, !destination.selected && destination.hovered ? 1 : 0)
+                        width: rail.width
+                        implicitHeight: 64
+                        padding: 0
+                        colBackground: "transparent"
+                        colBackgroundHover: "transparent"
+                        rippleEnabled: false
+                        onClicked: root.page = index
 
-                            Behavior on color {
-                                ElementMoveFastColor {}
+                        contentItem: Column {
+                            spacing: 4
+
+                            // the selection is a pill behind the icon, which grows in
+                            Rectangle {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: 56
+                                height: 32
+                                radius: height / 2
+                                color: Qt.alpha(Appearance.colors.layer1Hover, !destination.selected && destination.hovered ? 1 : 0)
+
+                                Behavior on color {
+                                    ElementMoveFastColor {}
+                                }
+
+                                MaterialSymbol {
+                                    anchors.centerIn: parent
+                                    Reveal.shown: !destination.selected
+                                    text: root.symbols[destination.index]
+                                    iconSize: 22
+                                    color: Appearance.colors.onSurfaceVariant
+                                }
+                                ShapeIcon {
+                                    anchors.centerIn: parent
+                                    Reveal.shown: destination.selected
+                                    Reveal.overshoot: 2.4
+                                    size: 38
+                                    iconSize: 20
+                                    shape: root.shapes[destination.index]
+                                    symbol: root.symbols[destination.index]
+                                    hovered: destination.hovered
+                                }
                             }
-
-                            MaterialSymbol {
-                                anchors.centerIn: parent
-                                Reveal.shown: !destination.selected
-                                text: root.symbols[destination.index]
-                                iconSize: 22
-                                color: Appearance.colors.onSurfaceVariant
+                            StyledText {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: rail.width
+                                horizontalAlignment: Text.AlignHCenter
+                                elide: Text.ElideRight
+                                text: root.titles[destination.index]
+                                font.pixelSize: Appearance.fontSize.smaller
+                                font.weight: destination.selected ? Font.DemiBold : Font.Normal
+                                color: destination.selected ? Appearance.colors.onSurface : Appearance.colors.onSurfaceVariant
                             }
-                            ShapeIcon {
-                                anchors.centerIn: parent
-                                Reveal.shown: destination.selected
-                                Reveal.overshoot: 2.4
-                                size: 38
-                                iconSize: 20
-                                shape: root.shapes[destination.index]
-                                symbol: root.symbols[destination.index]
-                                hovered: destination.hovered
-                            }
-                        }
-                        StyledText {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: rail.width
-                            horizontalAlignment: Text.AlignHCenter
-                            elide: Text.ElideRight
-                            text: root.titles[destination.index]
-                            font.pixelSize: Appearance.fontSize.smaller
-                            font.weight: destination.selected ? Font.DemiBold : Font.Normal
-                            color: destination.selected ? Appearance.colors.onSurface : Appearance.colors.onSurfaceVariant
                         }
                     }
                 }
@@ -131,7 +145,7 @@ T.Popup {
         }
 
         Rectangle {
-            anchors.left: rail.right
+            anchors.left: railScroller.right
             anchors.leftMargin: 12
             anchors.right: parent.right
             anchors.rightMargin: 8

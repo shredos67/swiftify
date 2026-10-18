@@ -333,6 +333,77 @@ private slots:
         QTRY_VERIFY(!library.isScanning());
     }
 
+    void aListThatCannotBeReadLosesNothing_data()
+    {
+        QTest::addColumn<QByteArray>("unreadable");
+        QTest::newRow("corrupt") << QByteArray("{\"version\": 1, \"playlists\": [");
+        QTest::newRow("newer") << QJsonDocument(QJsonObject {{QStringLiteral("version"), 2},
+                                                             {QStringLiteral("playlists"), QJsonArray {}}})
+                                      .toJson();
+    }
+
+    /// a list broken, or kept by a newer app, is left as it is, and the
+    /// copies it names with it, until it can be read again
+    void aListThatCannotBeReadLosesNothing()
+    {
+        QFETCH(QByteArray, unreadable);
+        QTemporaryDir music;
+        QTemporaryDir storage;
+        Settings settings(storage.filePath(QStringLiteral("swiftify.conf")));
+        const QString listPath = storage.filePath(QStringLiteral("local-playlists.json"));
+        QString id;
+        QString copy;
+        {
+            LocalLibrary library(&settings, nullptr, storage.path());
+            const QStringList uris = addThreeSongs(library, music);
+            QCOMPARE(uris.size(), 3);
+            QSignalSpy added(&library, &LocalLibrary::tracksAdded);
+            id = library.createPlaylist(QStringLiteral("Kept"), {}, {}, {songWithUri(library, uris[0])}).id;
+            QVERIFY(added.wait(5000));
+            copy = library.songsOf(id).value(0).localPath();
+            QTRY_VERIFY(!library.isCopying() && !library.isScanning());
+        }
+        QVERIFY(QFileInfo::exists(copy));
+        QFile list(listPath);
+        QVERIFY(list.open(QIODevice::ReadOnly));
+        const QByteArray readable = list.readAll();
+        list.close();
+        QVERIFY(list.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        list.write(unreadable);
+        list.close();
+        const auto listNow = [&] {
+            QFile file(listPath);
+            return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+        };
+
+        {
+            LocalLibrary library(&settings, nullptr, storage.path());
+            QCOMPARE(library.playlists()->count(), 0);
+            QTRY_VERIFY(!library.isScanning());
+            // the copy stays, and the list is not written over, not even by
+            // a playlist made now
+            QVERIFY(QFileInfo::exists(copy));
+            QVERIFY(library.createPlaylist(QStringLiteral("Meanwhile"), {}, {}, {}).isValid());
+            QCOMPARE(listNow(), unreadable);
+        }
+        QVERIFY(QFileInfo::exists(copy));
+        QCOMPARE(listNow(), unreadable);
+        // and kept aside besides
+        QFile aside(listPath + QStringLiteral(".unreadable"));
+        QVERIFY(aside.open(QIODevice::ReadOnly));
+        QCOMPARE(aside.readAll(), unreadable);
+
+        // readable again, the playlist is whole
+        QVERIFY(list.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        list.write(readable);
+        list.close();
+        LocalLibrary library(&settings, nullptr, storage.path());
+        QCOMPARE(library.playlists()->count(), 1);
+        QTRY_COMPARE(library.songsOf(id).value(0).localPath(), copy);
+        QTRY_VERIFY(!library.isScanning());
+        QVERIFY(QFileInfo::exists(copy));
+    }
+
     void aPlaylistMadeHereOpensAndChangesWithoutSpotify()
     {
         QTemporaryDir music;

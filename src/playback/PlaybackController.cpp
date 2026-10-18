@@ -100,6 +100,8 @@ PlaybackController::PlaybackController(PlaybackCore *core, SpotifySession *sessi
         schedulePlaybackSave();
     });
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &PlaybackController::savePlaybackState);
+    connect(m_core, &PlaybackCore::remoteTrackStarted, this, &PlaybackController::adoptRemoteSong);
+    connect(m_core, &PlaybackCore::remotePlayingChanged, this, &PlaybackController::followRemotePlaying);
 }
 
 PlaybackController::~PlaybackController()
@@ -174,6 +176,45 @@ void PlaybackController::reportError(const QString &context, const QString &mess
 void PlaybackController::setStatus(const QString &status)
 {
     m_session->setStatus(status);
+}
+
+void PlaybackController::adoptRemoteSong(const Song &song)
+{
+    // a resume of ours still running would play over it
+    cancelPlaybackRequest();
+    if (m_currentSong && !m_currentSong->isSameInstance(song)) {
+        m_history.append(*m_currentSong);
+    }
+    m_remote = true;
+    m_crossfadeStarted = false;
+    m_playbackNeedsLoad = false;
+    // a song restored from the last run, waiting for play, is not what plays
+    m_restoredPlayback = false;
+    m_resumePositionMs = 0;
+    // what comes next is up to whoever started it; swiftify's own up next
+    // would only be wrong about it
+    m_queue = {song};
+    m_shuffledQueue = {song};
+    setCurrentSong(song);
+    setLoading(false);
+    setLivePosition(m_core->playbackPositionMs());
+    setDuration(quint32(std::max(song.durationMs, 0)));
+    loadLyrics(song);
+    queueDidChange();
+    setStatus(QStringLiteral("Playing"));
+    setPlaying(true);
+    syncMediaSession();
+}
+
+void PlaybackController::followRemotePlaying(bool playing)
+{
+    // a song of ours still loading says nothing of anyone else's choice
+    if (!m_currentSong || playing == m_playing || m_playbackRequest.isRunning()) {
+        return;
+    }
+    setStatus(playing ? QStringLiteral("Playing") : QStringLiteral("Paused"));
+    setPlaying(playing);
+    syncMediaSession();
 }
 
 // --- state ---------------------------------------------------------------------------
@@ -327,6 +368,9 @@ bool PlaybackController::canSkipBackward() const
     if (!m_currentSong) {
         return false;
     }
+    if (m_remote) {
+        return true;
+    }
     if (m_livePositionMs > kRestartThresholdMs) {
         return true;
     }
@@ -339,6 +383,9 @@ bool PlaybackController::canSkipBackward() const
 
 bool PlaybackController::canSkipForward() const
 {
+    if (m_remote && m_currentSong) {
+        return true;
+    }
     const QList<Song> &queue = activeQueue();
     const int index = currentQueueIndex();
     if (!m_currentSong || queue.isEmpty() || index < 0) {
@@ -555,6 +602,8 @@ void PlaybackController::playFromQueue(const Song &song)
 void PlaybackController::startPlayback(const Song &song, bool recordHistory, bool fromSearch,
                                        quint32 crossfadeDurationMs, quint32 initialPositionMs)
 {
+    // playing a song here takes over from whatever started one elsewhere
+    m_remote = false;
     if (recordHistory && m_currentSong && !m_currentSong->isSameInstance(song)) {
         m_history.append(*m_currentSong);
     }
@@ -888,6 +937,9 @@ QCoro::Task<> PlaybackController::restartAudioOutput(CancelToken token)
 
 void PlaybackController::skipBackward()
 {
+    if (m_remote && m_core->skipRemote(false)) {
+        return;
+    }
     // a finished song has nothing left in the core to rewind.
     if (m_livePositionMs > kRestartThresholdMs && !m_playbackNeedsLoad) {
         seek(0);
@@ -914,6 +966,9 @@ void PlaybackController::skipBackward()
 
 void PlaybackController::skipToPreviousSong()
 {
+    if (m_remote && m_core->skipRemote(false)) {
+        return;
+    }
     const std::optional<Song> previous = precedingSong();
     if (!previous) {
         return;
@@ -926,6 +981,9 @@ void PlaybackController::skipToPreviousSong()
 
 void PlaybackController::skipForward()
 {
+    if (m_remote && m_core->skipRemote(true)) {
+        return;
+    }
     if (const auto next = nextQueueSong(m_repeatMode == RepeatMode::All)) {
         startPlayback(*next);
     }
@@ -1352,6 +1410,7 @@ void PlaybackController::reset()
     m_checkpointTimer.stop();
     m_settings->remove(kPlaybackStateKey);
     m_settings->sync();
+    m_remote = false;
     m_playbackRequest.cancel();
     m_lyricsRequest.cancel();
     m_queue.clear();

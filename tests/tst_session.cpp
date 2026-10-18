@@ -93,6 +93,8 @@ public:
     QSet<QString> revokedLogins;
     /// the web api's answers by path. any other path is not found
     QHash<QString, QByteArray> api;
+    /// every web api call, as its method, path and query
+    QStringList apiCalls;
 
     /// a new login, and its first refresh token
     QString login()
@@ -116,6 +118,10 @@ protected:
     QNetworkReply *createRequest(Operation operation, const QNetworkRequest &request, QIODevice *data) override
     {
         if (request.url().host() == QLatin1StringView("api.spotify.com")) {
+            const QString query = request.url().query(QUrl::FullyDecoded);
+            apiCalls << QStringLiteral("%1 %2%3").arg(
+                request.attribute(QNetworkRequest::CustomVerbAttribute).toString(), request.url().path(),
+                query.isEmpty() ? QString() : u'?' + query);
             const auto found = api.constFind(request.url().path());
             return found == api.cend() ? reply(request, 404, R"({"error":{"status":404,"message":"Not found"}})")
                                        : reply(request, 200, *found);
@@ -521,6 +527,92 @@ private slots:
         library.selectPlaylist(mine);
         QTRY_COMPARE(names(), QStringList {QStringLiteral("From The Web Api")});
         QVERIFY(!rig.core.take(QStringLiteral("playlist")));
+    }
+
+    void anArtistsTopSongsAreReadThroughThePlaybackSession()
+    {
+        Rig rig;
+        QTemporaryDir directory;
+        Settings settings(directory.filePath(QStringLiteral("swiftify.conf")));
+        LibraryStore library(&rig.session, &settings, &rig.errors);
+        const auto names = [&library] {
+            QStringList result;
+            for (const Song &song : library.artistTopSongs()->songs()) {
+                result << song.name;
+            }
+            return result;
+        };
+        rig.accounts.api.insert(QStringLiteral("/v1/me"), R"({"id":"me","display_name":"Me"})");
+        rig.accounts.api.insert(QStringLiteral("/v1/artists/sade/albums"),
+                                R"({"items":[{"id":"diamond","name":"Diamond Life","uri":"spotify:album:diamond"}]})");
+        rig.accounts.api.insert(QStringLiteral("/v1/artists/gone/albums"),
+                                R"({"items":[{"id":"left","name":"Left Behind","uri":"spotify:album:left"}]})");
+        rig.storeLibrary(rig.accounts.login(), QStringLiteral("access"), 60);
+        rig.storePlayback(rig.accounts.login(), QStringLiteral("librespot-login"));
+        rig.session.restoreSavedSessions();
+        QTRY_COMPARE(library.profileId(), QStringLiteral("me"));
+        settle();
+        const auto connect = rig.core.take(QStringLiteral("connectStored"));
+        QVERIFY(connect);
+        connect->succeed(QStringLiteral("librespot-login"));
+        QTRY_VERIFY(rig.session.isConnected());
+
+        Artist sade;
+        sade.id = QStringLiteral("sade");
+        sade.name = QStringLiteral("Sade");
+        library.selectArtist(sade);
+        settle();
+        const auto read = rig.core.take(QStringLiteral("topTracks"));
+        QVERIFY(read);
+        QCOMPARE(read->argument, QStringLiteral("spotify:artist:sade"));
+        read->succeed(QStringLiteral(
+            R"({"tracks":[{"type":"track","uri":"spotify:track:a","name":"Smooth Operator"},)"
+            R"({"type":"track","uri":"spotify:track:b","name":"Your Love Is King"}]})"));
+        QTRY_COMPARE(names(), (QStringList {QStringLiteral("Smooth Operator"), QStringLiteral("Your Love Is King")}));
+        QTRY_COMPARE(library.artistAlbums()->items().size(), 1);
+        QVERIFY(!rig.accounts.apiCalls.join(u'\n').contains(QStringLiteral("top-tracks")));
+
+        // the page still opens without them
+        Artist gone;
+        gone.id = QStringLiteral("gone");
+        gone.name = QStringLiteral("Gone");
+        library.selectArtist(gone);
+        settle();
+        const auto failed = rig.core.take(QStringLiteral("topTracks"));
+        QVERIFY(failed);
+        failed->fail(QStringLiteral("Spotify would not send the artist"));
+        QTRY_COMPARE(library.artistAlbums()->items().size(), 1);
+        QCOMPARE(library.artistAlbums()->items().first().name, QStringLiteral("Left Behind"));
+        QVERIFY(names().isEmpty());
+        QCOMPARE(rig.errors.message(), QString());
+    }
+
+    void aPlaylistIsUnfollowedThroughTheLibrary()
+    {
+        Rig rig;
+        QTemporaryDir directory;
+        Settings settings(directory.filePath(QStringLiteral("swiftify.conf")));
+        LibraryStore library(&rig.session, &settings, &rig.errors);
+        rig.accounts.api.insert(QStringLiteral("/v1/me"), R"({"id":"me","display_name":"Me"})");
+        rig.accounts.api.insert(QStringLiteral("/v1/me/library"), {});
+        rig.accounts.api.insert(QStringLiteral("/v1/me/playlists"), R"({"items":[]})");
+        rig.storeLibrary(rig.accounts.login(), QStringLiteral("access"), 60);
+        rig.session.restoreSavedSessions();
+        QTRY_COMPARE(library.profileId(), QStringLiteral("me"));
+        QVERIFY(rig.session.hasFullLibraryAccess());
+
+        QSignalSpy deleted(&library, &LibraryStore::playlistDeleted);
+        Playlist theirs;
+        theirs.id = QStringLiteral("theirs");
+        theirs.uri = QStringLiteral("spotify:playlist:theirs");
+        theirs.name = QStringLiteral("Theirs");
+        theirs.ownerId = QStringLiteral("someone");
+        library.deletePlaylist(theirs);
+        QTRY_COMPARE(deleted.size(), 1);
+        QCOMPARE(deleted.first().first().toString(), theirs.id);
+        QVERIFY(rig.accounts.apiCalls.contains(QStringLiteral("DELETE /v1/me/library?uris=spotify:playlist:theirs")));
+        QVERIFY(!rig.accounts.apiCalls.join(u'\n').contains(QStringLiteral("followers")));
+        QCOMPARE(rig.errors.message(), QString());
     }
 
     void aPlaylistDescriptionReadsAsPlainText()

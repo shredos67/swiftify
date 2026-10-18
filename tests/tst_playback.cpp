@@ -233,6 +233,50 @@ private slots:
         QCOMPARE(rig.player.previouslyPlayedSongs().size(), 1);
     }
 
+    void aSongStartedElsewhereIsShownAndSkipsGoThere()
+    {
+        Rig rig;
+        const QList<Song> queue = makeQueue(4);
+        rig.player.play(queue[0], queue);
+        rig.finishLoading();
+
+        // picked in spotify on a phone, playing through the connect device
+        Song picked;
+        picked.name = QStringLiteral("Picked elsewhere");
+        picked.uri = QStringLiteral("spotify:track:elsewhere");
+        picked.durationMs = 180'000;
+        rig.core.remote = true;
+        emit rig.core.remoteTrackStarted(picked);
+        QCOMPARE(rig.player.currentSong().uri, picked.uri);
+        QCOMPARE(rig.player.durationMs(), 180'000);
+        QVERIFY(rig.player.isPlaying());
+        QVERIFY(!rig.player.isLoading());
+        // what follows is up to whoever picked it
+        QCOMPARE(rig.player.upNext()->count(), 0);
+        QVERIFY(rig.player.canSkipForward());
+
+        rig.player.skipForward();
+        rig.player.skipToPreviousSong();
+        QCOMPARE(rig.core.log.mid(rig.core.log.size() - 2),
+                 (QStringList{QStringLiteral("skip next"), QStringLiteral("skip previous")}));
+        QCOMPARE(rig.player.currentSong().uri, picked.uri);
+
+        emit rig.core.remotePlayingChanged(false);
+        QVERIFY(!rig.player.isPlaying());
+        QCOMPARE(rig.session.status(), QStringLiteral("Paused"));
+        emit rig.core.remotePlayingChanged(true);
+        QVERIFY(rig.player.isPlaying());
+
+        // playing something here takes over again
+        rig.player.play(queue[1], queue);
+        rig.finishLoading();
+        const qsizetype logged = rig.core.log.size();
+        rig.player.skipForward();
+        rig.finishLoading();
+        QCOMPARE(rig.player.currentSong().uri, queue[2].uri);
+        QVERIFY(!rig.core.log.mid(logged).contains(QStringLiteral("skip next")));
+    }
+
     void theQueueStepsOnWithoutAReset()
     {
         Rig rig;

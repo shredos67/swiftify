@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QWebSocket>
@@ -60,12 +61,24 @@ public:
         send({{QStringLiteral("type"), QStringLiteral("playback_changed")}, {QStringLiteral("status"), status}});
     }
 
-    void sendTrack(const QString &uri, qint64 durationMs)
+    void sendTrack(const QString &uri, qint64 durationMs, const QString &name = QStringLiteral("Song"))
     {
+        const auto entity = [](const QString &entityUri, const QString &entityName) {
+            return QJsonObject{{QStringLiteral("entity"), QJsonObject{
+                {QStringLiteral("uri"), entityUri},
+                {QStringLiteral("decorations"), QJsonObject{
+                    {QStringLiteral("identity"), QJsonObject{{QStringLiteral("name"), entityName}}}}}}}};
+        };
         send({{QStringLiteral("type"), QStringLiteral("track_changed")},
               {QStringLiteral("item"), QJsonObject{
                   {QStringLiteral("uri"), uri},
                   {QStringLiteral("decorations"), QJsonObject{
+                      {QStringLiteral("identity"), QJsonObject{{QStringLiteral("name"), name}}},
+                      {QStringLiteral("creators"), QJsonArray{entity(QStringLiteral("spotify:artist:art"), QStringLiteral("Artist"))}},
+                      {QStringLiteral("parent"), entity(QStringLiteral("spotify:album:alb"), QStringLiteral("Album"))},
+                      {QStringLiteral("visual_identity"), QJsonObject{{QStringLiteral("cover"), QJsonArray{
+                          QJsonObject{{QStringLiteral("url"), QStringLiteral("https://i.scdn.co/image/large")},
+                                      {QStringLiteral("size"), QStringLiteral("large")}}}}}},
                       {QStringLiteral("playback"), QJsonObject{{QStringLiteral("duration_ms"), durationMs}}}}}}}});
     }
 
@@ -281,6 +294,49 @@ private slots:
         m_soloist->sendTrack(QStringLiteral("spotify:track:other"), 180'000);
         QTest::qWait(200);
         QVERIFY(!m_core->takeEndOfTrack());
+    }
+
+    void aSongPickedElsewhereIsFollowed()
+    {
+        QSignalSpy started(m_core.get(), &PlaybackCore::remoteTrackStarted);
+        QCoro::waitFor(m_core->playTrack(QStringLiteral("spotify:track:a")));
+        // swiftify's own play is nobody else's doing
+        QCOMPARE(started.count(), 0);
+        m_soloist->sendPosition(60'000);
+        m_soloist->sendTrack(QStringLiteral("spotify:track:picked"), 180'000, QStringLiteral("Picked"));
+        m_soloist->sendPosition(0);
+        QTRY_COMPARE(started.count(), 1);
+        const Song song = started.first().first().value<Song>();
+        QCOMPARE(song.uri, QStringLiteral("spotify:track:picked"));
+        QCOMPARE(song.name, QStringLiteral("Picked"));
+        QCOMPARE(song.artists, QStringLiteral("Artist"));
+        QCOMPARE(song.albumName, QStringLiteral("Album"));
+        QCOMPARE(song.albumId, QStringLiteral("alb"));
+        QCOMPARE(song.artworkUrl, QUrl(QStringLiteral("https://i.scdn.co/image/large")));
+        QCOMPARE(song.durationMs, 180'000);
+        QCOMPARE(m_core->playbackDurationMs(), 180'000u);
+        // its end is soloist's business: it goes on by its own queue
+        m_soloist->sendPosition(179'990);
+        QTest::qWait(150);
+        QVERIFY(!m_core->takeEndOfTrack());
+        // and the skips go to soloist
+        QVERIFY(m_core->skipRemote(true));
+        QTRY_VERIFY(m_soloist->commandNames().contains(QStringLiteral("skip_next")));
+        // until swiftify plays something itself
+        QCoro::waitFor(m_core->playTrack(QStringLiteral("spotify:track:b")));
+        QVERIFY(!m_core->skipRemote(true));
+    }
+
+    void aPauseElsewhereIsReported()
+    {
+        QCoro::waitFor(m_core->playTrack(QStringLiteral("spotify:track:a")));
+        QSignalSpy playing(m_core.get(), &PlaybackCore::remotePlayingChanged);
+        m_soloist->sendStatus(QStringLiteral("paused"));
+        QTRY_COMPARE(playing.count(), 1);
+        QCOMPARE(playing.last().first().toBool(), false);
+        m_soloist->sendStatus(QStringLiteral("playing"));
+        QTRY_COMPARE(playing.count(), 2);
+        QCOMPARE(playing.last().first().toBool(), true);
     }
 
     void aSongLeftLoadingIsAskedForAgain()

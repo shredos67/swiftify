@@ -28,6 +28,7 @@ first image shows equalizer, tempo and pitch settings. second picture shows how 
 > i will probably not be maintaining it, if you are interested in taking over this project you can send me an email
 
 - [Before you start](#before-you-start)
+- [Prebuilt builds](#prebuilt-builds)
 - [Building from source](#building-from-source)
   - [Build requirements](#build-requirements)
   - [macOS](#macos)
@@ -85,6 +86,14 @@ and copy it's ID into the settings. Swiftify connects over local IPC (Unix socke
 SDKs and automatic reconnection.
 It checks standard paths for native, Flatpak, Snap, Canary, PTB, and third-party clients like Vesktop.
 For more verbose logging run swiftify with `QT_LOGGING_RULES="swiftify.discord.debug=true"`
+
+## Prebuilt builds
+
+[releases](https://github.com/shredos67/swiftify/releases) have windows and linux x86_64 builds.
+
+- **windows.** unzip it anywhere and run `bin\swiftify.exe`.
+- **linux.** unpack it anywhere and run `bin/swiftify`. it brings its own Qt, but needs
+  alsa and libsecret, which pretty much every desktop already has.
 
 ## Building from source
 

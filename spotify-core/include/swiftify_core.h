@@ -67,6 +67,11 @@ void swiftify_core_lyrics_json(const SwiftifyCore *core, uint64_t request_id,
  * /v1/playlists/{id}/items page. */
 void swiftify_core_playlist_json(const SwiftifyCore *core, uint64_t request_id,
                                  const char *playlist_uri);
+/* an artist's top songs, read through the session, since the web api no
+ * longer has them. completes with json shaped like the web api's
+ * /v1/artists/{id}/top-tracks response. */
+void swiftify_core_artist_top_tracks_json(const SwiftifyCore *core, uint64_t request_id,
+                                          const char *artist_uri);
 /* plays a music file of the person's own from anywhere on disk: mp3, flac,
  * ogg vorbis, wav, aiff, or aac or apple lossless in an m4a. */
 void swiftify_core_play_file(const SwiftifyCore *core, uint64_t request_id, const char *path);

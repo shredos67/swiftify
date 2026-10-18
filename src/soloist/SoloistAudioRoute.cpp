@@ -135,6 +135,11 @@ bool SoloistAudioRoute::start()
             return false;
         }
         const bool ok = waitFor([&] { return reply.done; });
+        // one that timed out is cancelled, or its callback would still write
+        // to the reply after it has gone off the stack
+        if (!ok) {
+            pa_operation_cancel(operation);
+        }
         pa_operation_unref(operation);
         return ok;
     };
@@ -259,7 +264,9 @@ void SoloistAudioRoute::stop()
         if (pa_operation *operation = pa_context_unload_module(m_context, m_module, [](pa_context *, int, void *data) {
                 signal(static_cast<Reply *>(data));
             }, &unloaded)) {
-            waitFor([&] { return unloaded.done; }, 1000);
+            if (!waitFor([&] { return unloaded.done; }, 1000)) {
+                pa_operation_cancel(operation);
+            }
             pa_operation_unref(operation);
         }
         m_module = PA_INVALID_INDEX;

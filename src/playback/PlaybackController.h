@@ -247,6 +247,11 @@ private:
     void setDuration(quint32 durationMs);
     void setStatus(const QString &status);
     void reportError(const QString &context, const QString &message);
+    /// shows a song something else started on the core (picked in spotify
+    /// on a phone), which then goes on by its own queue
+    void adoptRemoteSong(const Song &song);
+    /// play or pause pressed elsewhere
+    void followRemotePlaying(bool playing);
 
     PlaybackCore *m_core;
     SpotifySession *m_session;
@@ -266,6 +271,9 @@ private:
     bool m_playbackNeedsLoad = false;
     bool m_restoredPlayback = false;
     quint32 m_resumePositionMs = 0;
+    /// what plays was started elsewhere: skips go to the core, and what
+    /// follows is up to whoever started it, until a song is played here
+    bool m_remote = false;
     bool m_audioOutputNeedsRestart = false;
     bool m_playing = false;
     bool m_loading = false;

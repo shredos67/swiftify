@@ -196,7 +196,9 @@ private:
     void loadCache();
     void setSources(const QStringList &sources);
     void setScanning(bool scanning);
-    void loadPlaylists();
+    /// false when the list is there but could not be read: then nothing of
+    /// it or the store is written over or let go
+    bool loadPlaylists();
     void savePlaylists() const;
     /// the playlists as they show now, after a change to them or their files
     void publishPlaylists();
@@ -219,6 +221,7 @@ private:
     QHash<QString, Entry> m_entries;
     bool m_scanning = false;
     QString m_playlistsPath;
+    bool m_playlistsReadable = true;
     QString m_coverDirectory;
     /// where the playlists' copies live, each in a folder of its own
     QString m_trackStore;

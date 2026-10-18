@@ -208,17 +208,16 @@ Item {
                     shadowVerticalOffset: 0
                 }
 
-                TitleText {
+                ScrollingText {
+                    objectName: "immersiveTitle"
                     width: parent.width
                     height: root.compactHorizontal ? 52 : root.layout.titleHeight
                     text: root.shownSong.name
                     horizontalAlignment: Text.AlignHCenter
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
                     font.pixelSize: root.compactHorizontal ? 24 : root.layout.titleFontSize
                     font.weight: Font.Bold
                     color: "white"
+                    rounded: true
                     animateChange: !metadataFade.running
                 }
 

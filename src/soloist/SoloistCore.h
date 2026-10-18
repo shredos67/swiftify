@@ -59,6 +59,7 @@ public:
     QCoro::Task<> restartAudioOutput() override;
     QCoro::Task<QString> lyricsJson(QString spotifyUri) override;
     QCoro::Task<QString> playlistJson(QString playlistUri) override;
+    QCoro::Task<QString> artistTopTracksJson(QString artistUri) override;
 
     void play() override;
     void pause() override;
@@ -78,6 +79,8 @@ public:
 
     void setSpectrumEnabled(bool enabled) override;
     int spectrumLevels(float *out, int capacity) const override;
+
+    bool skipRemote(bool forward) override;
 
 signals:
     /// anything soloist reported, or a reset; what waiting calls wake on
@@ -108,6 +111,11 @@ private:
     /// start (its autoplay) from being heard, where swiftify plays it on
     void gate(bool closed);
     void stopSoloist();
+    /// notices soloist playing something swiftify didn't ask for (picked in
+    /// spotify on a phone), and play or pause pressed elsewhere
+    void followRemote();
+    /// the song soloist is playing, from what it says of it
+    Song songFromItem() const;
     /// soloist's own volume: all the way up when swiftify plays it on, and
     /// sets the volume itself
     int soloistVolume() const;
@@ -135,6 +143,7 @@ private:
     bool m_active = false;
     Status m_status = Status::Idle;
     QString m_itemUri;
+    QJsonObject m_item;
     qint64 m_durationMs = 0;
     qint64 m_anchorPositionMs = 0;
     qint64 m_anchorTimestampMs = 0;
@@ -156,6 +165,14 @@ private:
     /// clock to buffer what follows, about 0.8s before; 0 until then
     qint64 m_endAtMs = 0;
     bool m_gated = false;
+    qint64 m_gatedAtMs = 0;
+    /// something else started what plays, and soloist goes on by its queue
+    bool m_remote = false;
+    /// swiftify's own plays still waiting for their song to start: soloist's
+    /// state meanwhile is the old song's, and nobody else's doing
+    int m_playsInFlight = 0;
+    /// the playing state last reported, so a report is made on a change only
+    std::optional<bool> m_reportedPlaying;
     quint64 m_requests = 0;
     quint64 m_resets = 0;
 };

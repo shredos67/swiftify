@@ -54,6 +54,9 @@ Item {
         // dragged past either end, it stretches and springs back
         boundsBehavior: Flickable.DragAndOvershootBounds
         cacheBuffer: 1200
+        // the fade hides lines scrolled past the edge, the clip keeps them
+        // from taking clicks meant for the top bar
+        clip: true
         // a step moves every line at once; each then springs from where it
         // was to its new place, the ones nearest the sung line first, so the
         // column arrives as a wave rather than a block

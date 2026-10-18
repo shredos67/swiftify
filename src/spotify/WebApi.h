@@ -32,8 +32,6 @@ public:
     QCoro::Task<QList<Song>> recentlyPlayed(QString accessToken);
     QCoro::Task<SearchResults> search(QString query, QString accessToken);
     QCoro::Task<Song> song(QString trackId, QString accessToken);
-    /// market left out, so spotify uses the account's country
-    QCoro::Task<QList<Song>> artistTopTracks(Artist artist, QString accessToken);
     QCoro::Task<QList<Song>> albumSongs(Album album, QString accessToken);
     QCoro::Task<QList<Album>> artistAlbums(Artist artist, QString accessToken);
 
@@ -48,7 +46,8 @@ public:
     QCoro::Task<> setPlaylistImage(QString playlistId, QByteArray jpeg, QString accessToken);
     /// spotify has no delete. removing a playlist from a library is an unfollow.
     QCoro::Task<> deletePlaylist(QString id, QString accessToken);
-    QCoro::Task<> setSaved(bool saved, QString songUri, QString accessToken);
+    /// saves or removes any spotify uri in the library
+    QCoro::Task<> setSaved(bool saved, QString uri, QString accessToken);
     /// at most 40 uris are checked
     QCoro::Task<QHash<QString, bool>> savedStatuses(QStringList uris, QString accessToken);
 

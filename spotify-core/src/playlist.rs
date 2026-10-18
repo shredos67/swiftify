@@ -81,7 +81,7 @@ fn append_page(uris: &mut Vec<String>, list: &SelectedListContent) -> bool {
 
 /// each track's details by its uri. episodes and local files are left out,
 /// as the web api path leaves them out
-async fn track_metadata(
+pub(crate) async fn track_metadata(
     session: &Session,
     uris: &[String],
 ) -> Result<HashMap<String, TrackPayload>, String> {
@@ -145,7 +145,7 @@ struct ItemPayload {
 }
 
 #[derive(Clone, Serialize)]
-struct TrackPayload {
+pub(crate) struct TrackPayload {
     #[serde(rename = "type")]
     kind: &'static str,
     uri: String,

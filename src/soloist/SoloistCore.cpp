@@ -13,12 +13,19 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QLoggingCategory>
+#include <QScopeGuard>
 #include <QStandardPaths>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+
+#ifdef Q_OS_LINUX
+#include <csignal>
+#include <sys/prctl.h>
+#endif
 
 Q_LOGGING_CATEGORY(lcSoloist, "swiftify.soloist")
 
@@ -61,6 +68,11 @@ SoloistCore::SoloistCore(PlaybackCore *fallback, SoloistConfig config, QObject *
     , m_liveBuffer(nullptr, &swiftify_live_buffer_free)
 {
     m_process.setProcessChannelMode(QProcess::MergedChannels);
+#ifdef Q_OS_LINUX
+    // soloist goes with a swiftify that crashes or is killed too. one left
+    // behind holds the data directory, and the next soloist will not start
+    m_process.setChildProcessModifier([] { ::prctl(PR_SET_PDEATHSIG, SIGTERM); });
+#endif
     connect(&m_process, &QProcess::readyRead, this, [this] {
         const QString output = QString::fromUtf8(m_process.readAll());
         for (const QStringView line : QStringView(output).split(u'\n', Qt::SkipEmptyParts)) {
@@ -299,7 +311,96 @@ void SoloistCore::handleMessage(const QString &text)
         return;
     }
     ++m_messages;
+    followRemote();
     emit stateChanged();
+}
+
+void SoloistCore::followRemote()
+{
+    // a play of swiftify's own is under way, or a song's end is being handed
+    // over: what soloist says now is not someone else's doing
+    // (a gate stays shut after swiftify's queue has run out; only just after
+    // a song's end is what plays soloist's own doing)
+    if (m_playsInFlight > 0 || (m_gated && nowMs() - m_gatedAtMs < 2'000) || m_endOfTrack || !m_loggedIn) {
+        return;
+    }
+    const bool sounding = m_status == Status::Playing || m_status == Status::Buffering;
+    if (sounding && !m_itemUri.isEmpty() && m_itemUri != m_expectedUri) {
+        qCInfo(lcSoloist) << "Playing" << m_itemUri << "as started from elsewhere";
+        m_remote = true;
+        m_expectedUri = m_itemUri;
+        m_expectedStarted = false;
+        m_endAtMs = 0;
+        if (m_localActive) {
+            try {
+                m_fallback->pause();
+            } catch (const SpotifyError &) {
+            }
+            m_localActive = false;
+        }
+        playRouted();
+        gate(false);
+        m_reportedPlaying = true;
+        emit remoteTrackStarted(songFromItem());
+        return;
+    }
+    // a file of the person's own playing leaves soloist paused, which is
+    // not a pause anyone pressed
+    if (m_localActive || !(m_status == Status::Playing || m_status == Status::Paused)) {
+        return;
+    }
+    const bool playing = m_status == Status::Playing;
+    if (m_reportedPlaying != playing) {
+        m_reportedPlaying = playing;
+        emit remotePlayingChanged(playing);
+    }
+}
+
+Song SoloistCore::songFromItem() const
+{
+    const auto name = [](const QJsonObject &entity) {
+        return entity.value(QStringLiteral("decorations")).toObject().value(QStringLiteral("identity")).toObject()
+            .value(QStringLiteral("name")).toString();
+    };
+    const QJsonObject decorations = m_item.value(QStringLiteral("decorations")).toObject();
+    Song song;
+    song.uri = m_itemUri;
+    song.name = name(m_item);
+    song.durationMs = int(m_durationMs);
+    QStringList artists;
+    for (const QJsonValue creator : decorations.value(QStringLiteral("creators")).toArray()) {
+        const QJsonObject entity = creator.toObject().value(QStringLiteral("entity")).toObject();
+        Artist artist;
+        artist.name = name(entity);
+        artist.uri = entity.value(QStringLiteral("uri")).toString();
+        artist.id = artist.uri.section(u':', 2);
+        artists << artist.name;
+        song.artistItems << artist;
+    }
+    song.artists = artists.join(QStringLiteral(", "));
+    const QJsonObject album = decorations.value(QStringLiteral("parent")).toObject().value(QStringLiteral("entity")).toObject();
+    song.albumName = name(album);
+    song.albumUri = album.value(QStringLiteral("uri")).toString();
+    song.albumId = song.albumUri.section(u':', 2);
+    // the largest cover soloist offers
+    for (const char *size : {"xlarge", "large", "default", "small"}) {
+        for (const QJsonValue cover : decorations.value(QStringLiteral("visual_identity")).toObject()
+                 .value(QStringLiteral("cover")).toArray()) {
+            if (song.artworkUrl.isEmpty() && cover.toObject().value(QStringLiteral("size")).toString() == QLatin1StringView(size)) {
+                song.artworkUrl = QUrl(cover.toObject().value(QStringLiteral("url")).toString());
+            }
+        }
+    }
+    return song;
+}
+
+bool SoloistCore::skipRemote(bool forward)
+{
+    if (!m_remote || m_localActive) {
+        return false;
+    }
+    send(forward ? QStringLiteral("skip_next") : QStringLiteral("skip_prev"));
+    return true;
 }
 
 void SoloistCore::applyPlaybackState(const QJsonObject &state)
@@ -338,6 +439,7 @@ void SoloistCore::applyItem(const QJsonObject &item)
         m_endAtMs = 0;
     }
     m_itemUri = uri;
+    m_item = item;
     // soloist 1.3 nests what the reference shows at the top under decorations
     QJsonObject playback = item.value(QStringLiteral("decorations")).toObject().value(QStringLiteral("playback")).toObject();
     if (playback.isEmpty()) {
@@ -404,6 +506,7 @@ void SoloistCore::gate(bool closed)
         return;
     }
     m_gated = closed;
+    m_gatedAtMs = nowMs();
     try {
         m_fallback->setVolume(closed ? 0.0f : m_volume);
     } catch (const SpotifyError &) {
@@ -476,6 +579,10 @@ QCoro::Task<> SoloistCore::playTrack(QString spotifyUri)
 {
     const quint64 resets = m_resets;
     const quint64 request = ++m_requests;
+    // soloist's state is the old song's until this one starts, however it ends
+    ++m_playsInFlight;
+    const auto settled = qScopeGuard([this] { --m_playsInFlight; });
+    m_remote = false;
     co_await ensureReady(resets);
     if (request != m_requests) {
         throw SpotifyError(SpotifyError::Kind::Superseded, QStringLiteral("superseded"));
@@ -576,6 +683,7 @@ QCoro::Task<> SoloistCore::playFile(QString path)
     m_expectedStarted = false;
     m_endOfTrack = false;
     m_endAtMs = 0;
+    m_remote = false;
     gate(false);
     m_localActive = true;
     co_await m_fallback->playFile(path);
@@ -715,6 +823,8 @@ void SoloistCore::reset()
     m_endOfTrack = false;
     m_endAtMs = 0;
     m_localActive = false;
+    m_remote = false;
+    m_reportedPlaying.reset();
     gate(false);
     m_fallback->reset();
     emit stateChanged();
@@ -733,6 +843,11 @@ QCoro::Task<QString> SoloistCore::lyricsJson(QString spotifyUri)
 QCoro::Task<QString> SoloistCore::playlistJson(QString playlistUri)
 {
     co_return co_await m_fallback->playlistJson(playlistUri);
+}
+
+QCoro::Task<QString> SoloistCore::artistTopTracksJson(QString artistUri)
+{
+    co_return co_await m_fallback->artistTopTracksJson(artistUri);
 }
 
 void SoloistCore::setStreamQuality(int kbps)

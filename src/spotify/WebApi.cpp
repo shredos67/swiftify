@@ -309,17 +309,6 @@ QCoro::Task<Song> WebApi::song(QString trackId, QString accessToken)
     co_return *song;
 }
 
-QCoro::Task<QList<Song>> WebApi::artistTopTracks(Artist artist, QString accessToken)
-{
-    const QJsonDocument document = co_await requestJson(
-        apiUrl(QStringLiteral("/v1/artists/%1/top-tracks").arg(artist.id)), "GET", accessToken);
-    QList<Song> result;
-    for (const QJsonValue &value : document.object().value(QStringLiteral("tracks")).toArray()) {
-        if (const auto song = json::track(value.toObject())) result.append(*song);
-    }
-    co_return result;
-}
-
 QCoro::Task<QList<Song>> WebApi::albumSongs(Album album, QString accessToken)
 {
     QList<Song> result;
@@ -406,12 +395,12 @@ QCoro::Task<> WebApi::setPlaylistImage(QString playlistId, QByteArray jpeg, QStr
 
 QCoro::Task<> WebApi::deletePlaylist(QString id, QString accessToken)
 {
-    co_await requestData(apiUrl(QStringLiteral("/v1/playlists/%1/followers").arg(id)), "DELETE", accessToken);
+    co_await setSaved(false, QStringLiteral("spotify:playlist:%1").arg(id), accessToken);
 }
 
-QCoro::Task<> WebApi::setSaved(bool saved, QString songUri, QString accessToken)
+QCoro::Task<> WebApi::setSaved(bool saved, QString uri, QString accessToken)
 {
-    const QUrlQuery requestQuery = QUrlQuery {{QStringLiteral("uris"), songUri}};
+    const QUrlQuery requestQuery = QUrlQuery {{QStringLiteral("uris"), uri}};
     co_await requestData(apiUrl(QStringLiteral("/v1/me/library"), requestQuery),
                          saved ? QByteArray("PUT") : QByteArray("DELETE"), accessToken);
 }

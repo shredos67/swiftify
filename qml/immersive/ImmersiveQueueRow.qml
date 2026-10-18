@@ -50,13 +50,14 @@ T.AbstractButton {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 3
 
-            StyledText {
+            ScrollingText {
                 width: parent.width
                 text: root.song.name
-                elide: Text.ElideRight
+                horizontalAlignment: Text.AlignLeft
                 font.pixelSize: Appearance.fontSize.small
                 font.weight: root.current ? Font.Bold : Font.DemiBold
                 color: root.current ? "white" : Qt.rgba(1, 1, 1, 0.84)
+                running: root.current || root.hovered
             }
             StyledText {
                 width: parent.width

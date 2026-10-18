@@ -78,6 +78,19 @@ QList<Song> songsFromItems(const QString &payload)
     return songs;
 }
 
+/// the top tracks response PlaybackCore::artistTopTracksJson completes with
+QList<Song> songsFromTopTracks(const QString &payload)
+{
+    QList<Song> songs;
+    const QJsonObject response = QJsonDocument::fromJson(payload.toUtf8()).object();
+    for (const QJsonValue &value : response.value(QStringLiteral("tracks")).toArray()) {
+        if (const auto song = json::track(value.toObject())) {
+            songs.append(*song);
+        }
+    }
+    return songs;
+}
+
 } // namespace
 
 bool LibraryStore::Destination::operator==(const Destination &other) const
@@ -722,12 +735,14 @@ QCoro::Task<> LibraryStore::runArtistLoad(Artist artist, CancelToken token)
     const Destination target {Page::Artist, {}, {}, artist};
     try {
         // top tracks are the reason you open an artist. albums still load if
-        // they fail.
+        // they fail. the web api no longer has them, the session does
         QList<Song> topSongs;
         bool topSongsLoaded = false;
         try {
-            topSongs = co_await m_session->withLibraryAccessToken<QList<Song>>(
-                [this, artist](QString accessToken) { return m_session->webApi().artistTopTracks(artist, accessToken); });
+            co_await m_session->ensureFreshPlaybackConnection();
+            throwIfCancelled(token);
+            topSongs = songsFromTopTracks(
+                co_await m_session->core()->artistTopTracksJson(QStringLiteral("spotify:artist:%1").arg(artist.id)));
             topSongsLoaded = true;
         } catch (const SpotifyError &error) {
             qCWarning(lcLibrary).noquote() << "loading top songs for" << artist.name << ':' << error.message();
